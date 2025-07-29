@@ -16,15 +16,16 @@ endpoint concurrently, and stores the results for later manual evaluation.
 import argparse
 import csv
 import datetime as dt
-from typing import List, Tuple, Dict
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Tuple
 
 from rich.console import Console, Group
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
-from rich.markdown import Markdown
 
-from backend.utils import get_agent_response, SYSTEM_PROMPT
+from backend.utils import SYSTEM_PROMPT, get_agent_response
 
 # -----------------------------------------------------------------------------
 # Configuration helpers
@@ -34,6 +35,10 @@ DEFAULT_CSV: Path = Path("data/sample_queries.csv")
 RESULTS_DIR: Path = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
+# Traces directory for annotation tool
+TRACES_DIR: Path = Path("annotation/traces")
+TRACES_DIR.mkdir(parents=True, exist_ok=True)
+
 MAX_WORKERS = 32 # For ThreadPoolExecutor
 
 # -----------------------------------------------------------------------------
@@ -42,13 +47,28 @@ MAX_WORKERS = 32 # For ThreadPoolExecutor
 
 # --- Sync function for ThreadPoolExecutor ---
 def process_query_sync(query_id: str, query: str) -> Tuple[str, str, str]:
-    """Processes a single query by calling the agent directly."""
+    """Processes a single query by calling the agent directly and saves trace."""
     initial_messages: List[Dict[str, str]] = [
         {"role": "user", "content": query}
     ]
     try:
         # get_agent_response now returns the full history
         updated_history = get_agent_response(initial_messages)
+        
+        # Save trace (request and response) for annotation tool
+        try:
+            ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            trace_path = TRACES_DIR / f"trace_{ts}.json"
+            trace_data = {
+                "request": {"messages": initial_messages},
+                "response": {"messages": updated_history}
+            }
+            with open(trace_path, "w") as f:
+                json.dump(trace_data, f, indent=2)
+        except Exception as trace_exc:
+            # Don't fail the whole process if trace saving fails
+            print(f"Warning: Failed to save trace for query {query_id}: {trace_exc}")
+        
         # Extract the last assistant message for the result
         assistant_reply = ""
         if updated_history and updated_history[-1]["role"] == "assistant":
@@ -125,6 +145,7 @@ def run_bulk_test(csv_path: Path, num_workers: int = MAX_WORKERS) -> None:
         writer.writerows(results_data)
 
     console.print(f"[bold green]Saved {len(results_data)} results to {str(out_path)}[/bold green]")
+    console.print(f"[bold green]Traces saved to {str(TRACES_DIR)} for annotation tool[/bold green]")
 
 
 if __name__ == "__main__":
