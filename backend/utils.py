@@ -9,11 +9,17 @@ wrapper around litellm so the rest of the application stays decluttered.
 import os
 from typing import Dict, Final, List
 
+import braintrust as bt
 import litellm  # type: ignore
 from dotenv import load_dotenv
 
 # Ensure the .env file is loaded as early as possible.
 load_dotenv(override=False)
+
+# Initialize Braintrust logger at module scope and wrap litellm client
+# so that spans related to calling litellm are properly nested and usage metrics are logged.
+bt.init_logger(os.environ.get("BRAINTRUST_PROJECT", "recipe-chatbot"))
+litellm_wrapper = bt.wrap_litellm(litellm)  # type: ignore
 
 # --- Constants -------------------------------------------------------------------
 
@@ -63,7 +69,15 @@ MODEL_NAME: Final[str] = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
 # --- Agent wrapper ---------------------------------------------------------------
 
-def get_agent_response(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:  # noqa: WPS231
+
+# Use the @bt.traced decorator to automatically log the input and output of the function.
+# We use notrace_io=True so that we can control the inputs/outputs logged manually.
+@bt.traced(notrace_io=True)
+def get_agent_response(
+    messages: List[Dict[str, str]],
+    metadata: dict | None = None,
+    temperature: float | None = None,
+) -> List[Dict[str, str]]:  # noqa: WPS231
     """Call the underlying large-language model via *litellm*.
 
     Parameters
@@ -86,16 +100,33 @@ def get_agent_response(messages: List[Dict[str, str]]) -> List[Dict[str, str]]: 
     else:
         current_messages = messages
 
-    completion = litellm.completion(
-        model=MODEL_NAME,
-        messages=current_messages, # Pass the full history
+    # Prepare completion parameters
+    completion_params = {
+        "model": MODEL_NAME,
+        "messages": current_messages,  # Pass the full history
+    }
+
+    # Add temperature if provided
+    if temperature is not None:
+        completion_params["temperature"] = temperature
+
+    completion = litellm_wrapper.completion(**completion_params)
+
+    assistant_reply_content: str = completion["choices"][0]["message"][
+        "content"
+    ].strip()  # type: ignore[index]
+
+    # Append assistant's response to the history
+    updated_messages = current_messages + [
+        {"role": "assistant", "content": assistant_reply_content}
+    ]
+
+    # Log the input and output of the function as a span.
+    # We pass in the metadata for the row so that we can trace the row back to the original input.
+    bt.current_span().log(
+        input=current_messages,
+        output=[updated_messages[-1]],
+        metadata=metadata,
     )
 
-    assistant_reply_content: str = (
-        completion["choices"][0]["message"]["content"]  # type: ignore[index]
-        .strip()
-    )
-    
-    # Append assistant's response to the history
-    updated_messages = current_messages + [{"role": "assistant", "content": assistant_reply_content}]
-    return updated_messages 
+    return updated_messages
