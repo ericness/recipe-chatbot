@@ -104,6 +104,7 @@ def get_agent_response(
     completion_params = {
         "model": MODEL_NAME,
         "messages": current_messages,  # Pass the full history
+        "caching": False,
     }
 
     # Add temperature if provided

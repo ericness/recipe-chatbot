@@ -37,7 +37,7 @@ def recipe_task(input_data):
     messages = [{"role": "user", "content": query_text}]
 
     response_messages = get_agent_response(
-        messages=messages, metadata={"temperature": 0.5}, temperature=0.5
+        messages=messages, metadata={"temperature": 1.0}, temperature=1.0
     )
 
     return response_messages[-1]["content"]
